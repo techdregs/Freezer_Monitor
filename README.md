@@ -112,7 +112,25 @@ The monitor remains powered after an alert until both conditions are true:
 
 The monitor reports alert state to Home Assistant; it does not directly send push notifications or email. Create a Home Assistant automation to deliver notifications.
 
-### Create a phone push or email alert
+### Import the alert blueprint
+
+The **Freezer Monitor Alerts** blueprint builds the automation for you. It sends the high temperature alert, repeats it until the freezer recovers, sends a recovery message, and can press **Acknowledge Freezer Alarm** on your behalf, so a monitor that has finished setup resumes power cycling on its own. Low battery and missed heartbeat alerts are included and are off by default.
+
+[![Open your Home Assistant instance and show the blueprint import dialog with a specific blueprint pre-filled.](https://my.home-assistant.io/badges/blueprint_import.svg)](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Ftechdregs%2FFreezer_Monitor%2Fblob%2Fmain%2FBlueprints%2Ffreezer_monitor_alerts.yaml)
+
+1. Click the badge above. If it does not open, copy `https://github.com/techdregs/Freezer_Monitor/blob/main/Blueprints/freezer_monitor_alerts.yaml` into **Settings → Automations & Scenes → Blueprints → Import Blueprint**.
+2. Click **Create Automation** on the imported blueprint.
+3. Pick the five Freezer Monitor entities it asks for: High Temp Alert, Freezer Temperature, Acknowledge Freezer Alarm, Battery Percentage, and Last Wake Time.
+4. Under **When the freezer is too warm**, replace the default Home Assistant notification with your Companion App notify action for phone push, or your configured email notify action.
+5. Save.
+
+The blueprint re-sends the alert every 15 minutes until the freezer drops below **Clear Temp Threshold**. Set the repeat interval to 0 to alert only once.
+
+To turn on the extra alerts, open the collapsed sections and raise their thresholds above 0. **Low battery alert** fires when Battery Percentage drops below the value you pick. **Missed heartbeat alert** fires when **Last Wake Time** has not changed for longer than you allow, which catches a flat battery, a Wi-Fi outage, or a monitor that has stopped waking. Set it comfortably longer than your **Wake Interval Hours**, for example 26 hours on the default 12 hour heartbeat. Restarting Home Assistant restarts that clock.
+
+### Build the automation yourself
+
+The blueprint is optional. To wire it up by hand:
 
 1. In Home Assistant, open **Settings → Automations & Scenes → Create Automation**.
 2. Create a new empty automation and add a **State** trigger.
@@ -146,6 +164,7 @@ There is a silkscreen error on the back of the PCB for the probe pins. This will
 ## Project files
 
 - [ESPHome YAML](YAML/Freezer_Monitor.yaml)
+- [Freezer Monitor Alerts blueprint](Blueprints/freezer_monitor_alerts.yaml)
 - Schematics: [main PCB](Schematics/Freezer%20Monitor%200.5.pdf), [flat probe cable](Schematics/Flat_NTC.pdf), and [KiCad FPC footprint](Schematics/FPC_Footprint/FPC8_1.0mm.kicad_mod)
 - Datasheets: [ESP32-C3-MINI-1](Datasheets/esp32-c3-mini-1_datasheet_en.pdf), [RX8111CE RTC](Datasheets/RX8111CE_en.pdf), and [TMP102](Datasheets/TMP102_UMW.pdf)
 - Enclosure models: [housing](Enclosure/Freezer%20Monitor%20v0.5%20Enclosure-Housing.3mf), [lid](Enclosure/Freezer%20Monitor%20v0.5%20Enclosure-Lid.3mf), and [complete enclosure STEP](Enclosure/Freezer%20Monitor%20v0.5%20Enclosure.step)

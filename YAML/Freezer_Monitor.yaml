@@ -8,7 +8,7 @@ esphome:
   name_add_mac_suffix: true
   project:
     name: "techdregs.freezer-monitor"
-    version: "0.1.3"
+    version: "0.1.4"
   on_boot:
     - priority: 500
       then:
@@ -281,14 +281,14 @@ sensor:
     accuracy_decimals: 2
     update_interval: 1s
 
-  - platform: template
+  - platform: copy
+    source_id: battery_voltage
     name: "Battery Percentage"
     id: battery_percentage
+    device_class: battery
+    state_class: measurement
     unit_of_measurement: "%"
     accuracy_decimals: 0
-    update_interval: 5s
-    lambda: |-
-      return id(battery_voltage).state;
     filters:
       - calibrate_linear:
           method: exact

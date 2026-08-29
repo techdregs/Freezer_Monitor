@@ -274,8 +274,9 @@ sensor:
     filters:
       - multiply: 1.548      # based on divider ratio adjusted for real measurements
       - median:
-          window_size: 5
-          send_every: 5       
+          window_size: 3
+          send_every: 3
+          send_first_at: 3
     unit_of_measurement: "V"
     accuracy_decimals: 2
     update_interval: 1s

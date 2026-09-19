@@ -43,6 +43,8 @@ Etsy (purchase): https://www.etsy.com/listing/4555225886/freezer-monitor-for-hom
 3. Charge the battery through the USB port.
 4. Continue with first-time setup below.
 
+** Please avoid hot plugging the probe. Always disconnect all power sources before inserting or removing the probe, otherwise the sensor may be damaged. **
+
 <img src="Images/Front_Notes.jpg" alt="Front view showing probe connection" width="500">
 
 ### Replacement battery safety

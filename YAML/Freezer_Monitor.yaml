@@ -1,14 +1,14 @@
 substitutions:
   name: "freezer-monitor"
   friendly_name: "Freezer Monitor"
-  
+
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   name_add_mac_suffix: true
   project:
     name: "techdregs.freezer-monitor"
-    version: "0.1.4"
+    version: "0.1.5"
   on_boot:
     - priority: 500
       then:
@@ -59,14 +59,14 @@ esp32_improv:
 
 safe_mode:
   id: safe_mode_component
-  boot_is_good_after: 
+  boot_is_good_after:
     seconds: 10
 
 globals:
   - id: cycle_fired
     type: bool
     restore_value: no
-    initial_value: "false" 
+    initial_value: "false"
   - id: woke_from_event
     type: bool
     restore_value: no
@@ -96,7 +96,7 @@ external_components:
       path: .
     components: [tmp102_extended]
     refresh: always
-    
+
   - source:
       type: git
       url: https://github.com/techdregs/RX8XXX
@@ -236,7 +236,7 @@ sensor:
       - lambda: return x * (9.0 / 5.0) + 32.0;
     unit_of_measurement: °F
     update_interval: 5s
-  
+
   - platform: tmp102_extended
     id: freezer_temperature
     name: "Freezer Temperature"
@@ -253,7 +253,7 @@ sensor:
       name: "High Temp Threshold"
       initial_value: "10°F"
       restore_value: true
-    temperature_low: 
+    temperature_low:
       id: clear_temp_threshold
       name: "Clear Temp Threshold"
       initial_value: "9°F"
@@ -265,12 +265,12 @@ sensor:
       - lambda: return x * (9.0 / 5.0) + 32.0;
     unit_of_measurement: "°F"
     update_interval: 5s
-    
+
   - platform: adc
     pin: GPIO1
     name: "Battery Voltage"
     id: battery_voltage
-    attenuation: 12dB         
+    attenuation: 12dB
     filters:
       - multiply: 1.548      # based on divider ratio adjusted for real measurements
       - median:
@@ -301,7 +301,7 @@ sensor:
       - clamp:
           min_value: 0
           max_value: 100
-  
+
   - platform: uptime
     id: device_uptime
     name: "Device Uptime"
@@ -311,7 +311,7 @@ sensor:
     name: "WiFi Signal dBm"
     id: wifi_db
     update_interval: 5s
-    
+
 text_sensor:
   - platform: template
     id: last_wake_reason
@@ -322,7 +322,7 @@ text_sensor:
     id: last_wake_time
     name: "Last Wake Time"
     icon: mdi:clock-outline
-    
+
 number:
   - platform: template
     id: wake_start_hour
@@ -473,33 +473,33 @@ script:
 
           const uint32_t start_minute_of_day =
               start_hour * 60UL + start_minute;
-          
+
           uint32_t target_minute_of_day;
-          
+
           if (interval_hours == 0) {
             // Once daily at the configured start time.
             target_minute_of_day = start_minute_of_day;
-          
+
             if (target_minute_of_day <= now_minute_of_day) {
               target_minute_of_day += 1440UL;
             }
           } else {
             const uint32_t step_minutes = interval_hours * 60UL;
-          
+
             // Minutes elapsed since the most recent occurrence of the
             // configured start time, including across midnight.
             const uint32_t elapsed_minutes =
                 (now_minute_of_day + 1440UL - start_minute_of_day) % 1440UL;
-          
+
             // Select the first interval strictly after the current minute.
             const uint32_t intervals_elapsed =
                 elapsed_minutes / step_minutes;
-          
+
             target_minute_of_day =
                 start_minute_of_day +
                 (intervals_elapsed + 1UL) * step_minutes;
           }
-          
+
           target_minute_of_day %= 1440UL;
           id(next_alarm_hour) = target_minute_of_day / 60UL;
           id(next_alarm_minute) = target_minute_of_day % 60UL;
@@ -515,7 +515,6 @@ script:
           then:
             - rx8xxx.set_alarm:
                 id: rx8111
-                enabled: true
                 hour: !lambda "return id(next_alarm_hour);"
                 minute: !lambda "return id(next_alarm_minute);"
                 second: 0

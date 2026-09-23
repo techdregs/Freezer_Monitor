@@ -8,7 +8,7 @@ esphome:
   name_add_mac_suffix: true
   project:
     name: "techdregs.freezer-monitor"
-    version: "0.1.5"
+    version: "0.1.6"
   on_boot:
     - priority: 500
       then:
@@ -170,6 +170,11 @@ binary_sensor:
       then:
         - lambda: |-
             id(keep_on_for_testing) = x;
+  
+  - platform: tmp102_extended
+    tmp102_id: freezer_temperature
+    id: high_temp_alert
+    name: "High Temp Alert"
 
 i2c:
   id: i2c_bus
@@ -243,24 +248,8 @@ sensor:
     address: 0x48
     i2c_id: i2c_bus
     conversion_rate: 0.25Hz
-    alert:
-      id: high_temp_alert
-      name: "High Temp Alert"
     alert_polarity: active_low
     thermostat_mode: comparator
-    temperature_high:
-      id: high_temp_threshold
-      name: "High Temp Threshold"
-      initial_value: "10°F"
-      restore_value: true
-    temperature_low:
-      id: clear_temp_threshold
-      name: "Clear Temp Threshold"
-      initial_value: "9°F"
-      restore_value: true
-    threshold_status:
-      id: threshold_status
-      name: "Threshold Status"
     filters:
       - lambda: return x * (9.0 / 5.0) + 32.0;
     unit_of_measurement: "°F"
@@ -323,6 +312,11 @@ text_sensor:
     name: "Last Wake Time"
     icon: mdi:clock-outline
 
+  - platform: tmp102_extended
+    tmp102_id: freezer_temperature
+    id: threshold_status
+    name: "Threshold Status"
+
 number:
   - platform: template
     id: wake_start_hour
@@ -352,6 +346,19 @@ number:
       then:
         - script.execute: set_next_alarm
 
+  - platform: tmp102_extended
+    tmp102_id: freezer_temperature
+    temperature_high:
+      id: high_temp_threshold
+      name: "High Temp Threshold"
+      initial_value: "10°F"
+      restore_value: true
+    temperature_low:
+      id: clear_temp_threshold
+      name: "Clear Temp Threshold"
+      initial_value: "9°F"
+      restore_value: true
+      
 select:
   - platform: template
     id: wake_interval_hours

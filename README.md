@@ -91,8 +91,6 @@ The helper cannot power on the monitor immediately and cannot apply its value du
 | --- | --- |
 | **CONTROLS**| |
 | **Acknowledge Freezer Alarm** | Acknowledges a temperature event so normal power cycling can resume. |
-| **Clear Temp Threshold** | Temperature the freezer must fall below before an alert can clear. Default: 9 °F. |
-| **High Temp Threshold** | Temperature that triggers an Event/Alert. Default: 10 °F. |
 |||
 <img src="Images/Controls.png" alt="App Controls" width="500">
 
@@ -111,6 +109,8 @@ The helper cannot power on the monitor immediately and cannot apply its value du
 | Home Assistant entity | Purpose |
 | --- | --- |
 | **CONFIGURATION**| |
+| **Clear Temp Threshold** | Temperature the freezer must fall below before an alert can clear. Default: 9 °F. |
+| **High Temp Threshold** | Temperature that triggers an Event/Alert. Default: 10 °F. |
 | **Keep On for Configuration** | Keeps the monitor powered for setup, updates, and configuration. Turn it off for normal low-power operation. |
 | **Wake Start Hour (UTC)** / **Wake Start Minute** / **Wake Interval Hours** | Heartbeat schedule controls. |
 |  |  |
@@ -118,7 +118,7 @@ The helper cannot power on the monitor immediately and cannot apply its value du
 
 Home Assistant presents temperature sensors and threshold controls in its configured preferred temperature unit. Firmware defaults are 10 °F high and 9 °F clear; the device stores the underlying TMP102 limits in Celsius.
 
-The clear threshold must be lower than the high threshold. The device rejects a high threshold below the clear threshold, or a clear threshold above the high threshold.
+The clear threshold must not exceed the high threshold; a lower value provides hysteresis. Changes that reverse this order are rejected.
 
 ## Alerts and notifications
 
@@ -171,6 +171,8 @@ The pre-flashed firmware is intended to work without YAML edits. Advanced ESPHom
 
 Compiling the adopted YAML requires Internet access from the ESPHome host. It downloads the external TMP102 and RX8XXX ESPHome components referenced in the configuration.
 
+When migrating older YAML, keep TMP102 temperature readings under `sensor`, move threshold controls to `number`, alert state to `binary_sensor`, and threshold status to `text_sensor`. Each optional platform uses `platform: tmp102_extended` and links to the temperature sensor with `tmp102_id: freezer_temperature`. See the [current YAML](YAML/Freezer_Monitor.yaml).
+
 Serial logs are disabled in the shipped firmware (`logger.baud_rate: 0`) to reduce power use.
 
 ### Manual USB flashing
@@ -219,5 +221,6 @@ Schematics and models are supplied for reference and custom enclosure design.
 | --- | --- |
 | Device remains on after disabling Keep On | Confirm it has received Home Assistant time synchronization. The monitor cannot schedule its first normal power cut until RTC time is valid. |
 | A setting does not change | The monitor was likely powered off. Wait for an awake period or enable **Keep On for Configuration**. |
+| A threshold change is rejected or fails | Check **Threshold Status** for an invalid threshold value or pair, or an I²C write failure. |
 | No phone/email alert | Confirm **High Temp Alert** changes to `on` and that the Home Assistant automation and notification service work. |
 | Cannot use serial logs | Shipped firmware intentionally disables serial logging. Use ESPHome logs/API while the device is awake, or customize YAML after adoption. |

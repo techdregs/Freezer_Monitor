@@ -1,0 +1,368 @@
+blueprint:
+  name: Freezer Monitor Alerts
+  description: >-
+    Notifications for the techdregs Freezer Monitor. Pick your monitor from
+    the device dropdown and the blueprint finds its entities by itself.
+
+
+    Sends an alert when the freezer goes above the High Temp Threshold and
+    keeps re-sending it until the temperature comes back down. Sends a
+    recovery message when it clears, and can press Acknowledge Freezer Alarm
+    for you so the monitor resumes its normal power cycling.
+
+
+    Two optional watchdogs are turned off by default: a low battery alert, and
+    a missed heartbeat alert for when the monitor stops checking in.
+
+
+    These variables are available inside every action block:
+    `freezer_temp`, `battery_level`, `last_wake`, `elapsed_hours`.
+  domain: automation
+  homeassistant:
+    min_version: 2024.10.0
+  source_url: https://github.com/techdregs/Freezer_Monitor/blob/main/Blueprints/freezer_monitor_alerts.yaml
+  input:
+    device:
+      name: Freezer Monitor
+      description: Select your Freezer Monitor from the dropdown.
+      selector:
+        device:
+          filter:
+            - integration: esphome
+              manufacturer: techdregs
+              model: freezer-monitor
+          multiple: false
+
+    temperature_section:
+      name: Temperature alert
+      icon: mdi:thermometer-alert
+      input:
+        alert_actions:
+          name: When the freezer is too warm
+          description: >-
+            Add your phone push or email action here. The default writes a
+            Home Assistant notification instead.
+          default:
+            - action: persistent_notification.create
+              data:
+                title: Freezer temperature alert
+                message: "Freezer is at {{ freezer_temp }}. Check the freezer."
+                notification_id: freezer_monitor_high_temp
+          selector:
+            action: {}
+        repeat_minutes:
+          name: Repeat every
+          description: >-
+            Keep re-sending the alert on this interval until the freezer drops
+            below the Clear Temp Threshold. Set to 0 to alert only once.
+          default: 15
+          selector:
+            number:
+              min: 0
+              max: 240
+              step: 5
+              unit_of_measurement: minutes
+              mode: slider
+        recovery_actions:
+          name: When the freezer recovers
+          description: >-
+            Runs once when High Temp Alert turns off. The default clears the
+            Home Assistant notification.
+          default:
+            - action: persistent_notification.dismiss
+              data:
+                notification_id: freezer_monitor_high_temp
+          selector:
+            action: {}
+        auto_acknowledge:
+          name: Acknowledge the alarm automatically
+          description: >-
+            Press Acknowledge Freezer Alarm once the freezer has recovered, so
+            the monitor goes back to normal power cycling without a trip into
+            Home Assistant.
+          default: true
+          selector:
+            boolean: {}
+
+    battery_section:
+      name: Low battery alert
+      icon: mdi:battery-alert
+      collapsed: true
+      input:
+        battery_threshold:
+          name: Battery threshold
+          description: >-
+            Alert when Battery Percentage drops below this. Set to 0 to turn
+            this off.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 100
+              step: 5
+              unit_of_measurement: "%"
+              mode: slider
+        battery_actions:
+          name: When the battery is low
+          default:
+            - action: persistent_notification.create
+              data:
+                title: Freezer Monitor battery low
+                message: "Battery is at {{ battery_level }}%. Charge the freezer monitor."
+                notification_id: freezer_monitor_battery
+          selector:
+            action: {}
+
+    heartbeat_section:
+      name: Missed heartbeat alert
+      icon: mdi:heart-pulse
+      collapsed: true
+      input:
+        stale_hours:
+          name: Alert after
+          description: >-
+            Alert if Last Wake Time has not changed for this long. The monitor
+            wakes every 12 hours by default, so pick something comfortably
+            longer than your Wake Interval Hours setting. Set to 0 to turn this
+            off. Restarting Home Assistant restarts this clock, so a Home
+            Assistant that restarts more often than this will not alert.
+          default: 0
+          selector:
+            number:
+              min: 0
+              max: 96
+              step: 1
+              unit_of_measurement: hours
+              mode: slider
+        heartbeat_actions:
+          name: When the monitor stops checking in
+          default:
+            - action: persistent_notification.create
+              data:
+                title: Freezer Monitor has not checked in
+                message: >-
+                  No wake from the freezer monitor in {{ elapsed_hours }} hours.
+                  Last wake was {{ last_wake }}.
+                notification_id: freezer_monitor_heartbeat
+          selector:
+            action: {}
+
+    overrides_section:
+      name: Manual entity overrides
+      icon: mdi:pencil-outline
+      collapsed: true
+      description: >-
+        Leave these empty. The blueprint matches the monitor's entities by
+        their default entity IDs; only pick entities here if you have renamed
+        them.
+      input:
+        high_temp_alert_override:
+          name: High Temp Alert
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: binary_sensor
+                integration: esphome
+        freezer_temperature_override:
+          name: Freezer Temperature
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: sensor
+                integration: esphome
+        acknowledge_button_override:
+          name: Acknowledge Freezer Alarm
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: button
+                integration: esphome
+        battery_percentage_override:
+          name: Battery Percentage
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: sensor
+                integration: esphome
+        last_wake_time_override:
+          name: Last Wake Time
+          default: ""
+          selector:
+            entity:
+              filter:
+                domain: sensor
+                integration: esphome
+
+mode: parallel
+max: 10
+max_exceeded: silent
+
+# Entity resolution lives twice on purpose. trigger_variables are only usable
+# inside triggers, and the runtime variables below are not usable in triggers,
+# so both need their own copy.
+trigger_variables:
+  fm_device: !input device
+  fm_entities: "{{ device_entities(fm_device) }}"
+  alert_override: !input high_temp_alert_override
+  battery_override: !input battery_percentage_override
+  wake_override: !input last_wake_time_override
+  t_battery_threshold: !input battery_threshold
+  t_stale_hours: !input stale_hours
+  alert_entity: >-
+    {{ alert_override if alert_override else
+       fm_entities | select('search', '^binary_sensor\..*high_temp_alert$') | list | first | default('') }}
+  battery_entity: >-
+    {{ battery_override if battery_override else
+       fm_entities | select('search', '^sensor\..*battery_percentage$') | list | first | default('') }}
+  wake_entity: >-
+    {{ wake_override if wake_override else
+       fm_entities | select('search', '^sensor\..*last_wake_time$') | list | first | default('') }}
+
+variables:
+  fm_device: !input device
+  fm_entities: "{{ device_entities(fm_device) }}"
+  alert_override: !input high_temp_alert_override
+  temp_override: !input freezer_temperature_override
+  ack_override: !input acknowledge_button_override
+  battery_override: !input battery_percentage_override
+  wake_override: !input last_wake_time_override
+  alert_entity: >-
+    {{ alert_override if alert_override else
+       fm_entities | select('search', '^binary_sensor\..*high_temp_alert$') | list | first | default('') }}
+  temp_entity: >-
+    {{ temp_override if temp_override else
+       fm_entities | select('search', '^sensor\..*freezer_temperature$') | list | first | default('') }}
+  ack_entity: >-
+    {{ ack_override if ack_override else
+       fm_entities | select('search', '^button\..*acknowledge_freezer_alarm$') | list | first | default('') }}
+  battery_entity: >-
+    {{ battery_override if battery_override else
+       fm_entities | select('search', '^sensor\..*battery_percentage$') | list | first | default('') }}
+  wake_entity: >-
+    {{ wake_override if wake_override else
+       fm_entities | select('search', '^sensor\..*last_wake_time$') | list | first | default('') }}
+  repeat_minutes: !input repeat_minutes
+  stale_hours: !input stale_hours
+  battery_threshold: !input battery_threshold
+  auto_acknowledge: !input auto_acknowledge
+  freezer_temp: "{{ states(temp_entity, with_unit=true) }}"
+  battery_level: "{{ states(battery_entity) }}"
+  last_wake: "{{ states(wake_entity) }}"
+  elapsed_hours: >-
+    {{ 0 if states[wake_entity] is none else
+       ((now() - states[wake_entity].last_changed).total_seconds() / 3600) | round(1) }}
+
+triggers:
+  - alias: The High Temp Alert entity changed state
+    trigger: event
+    event_type: state_changed
+    event_data:
+      entity_id: "{{ alert_entity }}"
+    id: alert_changed
+  - alias: Battery dropped below the threshold
+    trigger: template
+    value_template: >-
+      {{ t_battery_threshold | int(0) > 0 and battery_entity != '' and
+         states(battery_entity) | float(101) < t_battery_threshold | int(0) }}
+    id: battery_low
+    # The monitor publishes one bogus 0% reading on some wakes, before its
+    # battery voltage sensor has taken a reading. It corrects itself a few
+    # seconds later, so hold the trigger long enough to ride that out. A real
+    # low battery stays below the threshold for the whole sleep window.
+    for:
+      minutes: 5
+  - alias: Last Wake Time has gone stale
+    trigger: template
+    value_template: >-
+      {{ t_stale_hours | int(0) > 0 and wake_entity != '' and
+         states(wake_entity) not in ['unknown', 'unavailable'] and
+         now() - states[wake_entity].last_changed > timedelta(hours=t_stale_hours | int(0)) }}
+    id: watchdog
+
+conditions: []
+
+actions:
+  - choose:
+      - alias: Freezer is too warm
+        conditions:
+          - condition: trigger
+            id: alert_changed
+          - alias: High Temp Alert turned on
+            condition: template
+            value_template: >-
+              {{ trigger.event.data.new_state is not none and
+                 trigger.event.data.new_state.state == 'on' and
+                 trigger.event.data.old_state is not none and
+                 trigger.event.data.old_state.state != 'on' }}
+        sequence:
+          - alias: Run the alert actions
+            choose: []
+            default: !input alert_actions
+          - alias: Keep alerting until the freezer recovers
+            if:
+              - condition: template
+                value_template: "{{ repeat_minutes | int(0) > 0 }}"
+            then:
+              - repeat:
+                  sequence:
+                    - alias: Wait for recovery, or for the repeat interval
+                      wait_template: "{{ is_state(alert_entity, 'off') }}"
+                      timeout:
+                        minutes: "{{ repeat_minutes | int(0) }}"
+                      continue_on_timeout: true
+                    - alias: Re-alert if the freezer is still too warm
+                      if:
+                        - condition: template
+                          value_template: "{{ not wait.completed and is_state(alert_entity, 'on') }}"
+                      then:
+                        - alias: Refresh the temperature for this message
+                          variables:
+                            freezer_temp: "{{ states(temp_entity, with_unit=true) }}"
+                        - alias: Run the alert actions again
+                          choose: []
+                          default: !input alert_actions
+                  until:
+                    - condition: template
+                      value_template: "{{ not is_state(alert_entity, 'on') }}"
+
+      - alias: Freezer recovered
+        conditions:
+          - condition: trigger
+            id: alert_changed
+          - alias: High Temp Alert turned off after an alert
+            condition: template
+            value_template: >-
+              {{ trigger.event.data.new_state is not none and
+                 trigger.event.data.new_state.state == 'off' and
+                 trigger.event.data.old_state is not none and
+                 trigger.event.data.old_state.state == 'on' }}
+        sequence:
+          - alias: Run the recovery actions
+            choose: []
+            default: !input recovery_actions
+          - alias: Acknowledge the alarm on the monitor
+            if:
+              - condition: template
+                value_template: "{{ auto_acknowledge and ack_entity != '' }}"
+            then:
+              - alias: Press Acknowledge Freezer Alarm
+                action: button.press
+                target:
+                  entity_id: "{{ ack_entity }}"
+                continue_on_error: true
+
+      - alias: Battery is low
+        conditions:
+          - condition: trigger
+            id: battery_low
+        sequence: !input battery_actions
+
+      - alias: Monitor has not checked in
+        conditions:
+          - condition: trigger
+            id: watchdog
+        sequence: !input heartbeat_actions

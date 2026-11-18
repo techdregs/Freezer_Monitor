@@ -1,18 +1,30 @@
 substitutions:
   name: "freezer-monitor"
   friendly_name: "Freezer Monitor"
-
+  
 esphome:
   name: "${name}"
   friendly_name: "${friendly_name}"
   name_add_mac_suffix: true
   project:
     name: "techdregs.freezer-monitor"
-    version: "0.1.6"
+    version: "0.2.0"
   on_boot:
     - priority: 500
       then:
         - switch.turn_on: tmp_power
+    - priority: -100
+      then:
+        # Let retained RTC flags and boot retries settle before changing the alarm.
+        - delay: 3s
+        - wait_until:
+            condition:
+              lambda: 'return id(alarm_flag).has_state() && id(event_flag).has_state();'
+            timeout: 5s
+        - lambda: |-
+            id(woke_from_event) = id(event_flag).has_state() && id(event_flag).state;
+            id(scheduling_ready) = true;
+        - script.execute: publish_wake_status
 
 esp32:
   variant: esp32c3
@@ -25,12 +37,16 @@ preferences:
 
 logger:
   id: logger_component
-  level: WARN
-  baud_rate: 0
-
+  level: DEBUG #VERBOSE
+  #hardware_uart: USB_SERIAL_JTAG
+  #logs:
+  #  sensor: VERBOSE
+  
 api:
   id: api_server
   encryption: {}
+  # Shutdown recovery owns reboot decisions; do not loop on a network outage.
+  reboot_timeout: 0s
 
 provisioning:
   id: provisioning_component
@@ -46,6 +62,7 @@ dashboard_import:
 
 wifi:
   id: wifi_component
+  reboot_timeout: 0s
   fast_connect: True
   ap:
     ssid: "${friendly_name} Setup"
@@ -53,14 +70,15 @@ wifi:
 captive_portal:
   id: captive_portal_component
 
-esp32_improv:
-  id: improv_ble
+improv_ble:
+  id: improv_ble_component
   authorizer: none
 
 safe_mode:
   id: safe_mode_component
   boot_is_good_after:
-    seconds: 10
+    # The reporting window can finish seven seconds into a fast boot.
+    seconds: 5
 
 globals:
   - id: cycle_fired
@@ -87,23 +105,32 @@ globals:
     type: bool
     restore_value: no
     initial_value: "false"
-
-external_components:
-  - source:
-      type: git
-      url: https://github.com/techdregs/TMP102_Extended
-      ref: main
-      path: .
-    components: [tmp102_extended]
-    refresh: always
-
-  - source:
-      type: git
-      url: https://github.com/techdregs/RX8XXX
-      ref: main
-      path: ESPHome
-    components: [rx8xxx]
-    refresh: always
+  - id: scheduling_ready
+    type: bool
+    initial_value: "false"
+  - id: report_window_complete
+    type: bool
+    initial_value: "false"
+  - id: subscriber_seen
+    type: bool
+    initial_value: "false"
+  - id: subscriber_since
+    type: uint32_t
+    initial_value: "0"
+  - id: shutdown_hold
+    type: bool
+    initial_value: "false"
+  # RTC memory survives a software reboot, but not the normal hard power cut.
+  - id: power_cut_retry_used
+    type: bool
+    restore_value: true
+    storage: rtc
+    initial_value: "false"
+  # Retain evidence even if the recovery reboot fixes the problem.
+  - id: power_cut_fault_latched
+    type: bool
+    restore_value: true
+    initial_value: "false"
 
 switch:
   - platform: gpio
@@ -159,6 +186,13 @@ switch:
                   entity_id: input_boolean.freezer_monitor_keep_awake
 
 binary_sensor:
+  - platform: template
+    id: power_cut_fault
+    name: "Power Cut Fault"
+    device_class: problem
+    entity_category: diagnostic
+    lambda: 'return id(power_cut_fault_latched);'
+
   # Optional persistent Keep Awake control. If the helper does not exist in HA,
   # this sensor has no state and the normal device switch remains independent.
   - platform: homeassistant
@@ -171,11 +205,20 @@ binary_sensor:
         - lambda: |-
             id(keep_on_for_testing) = x;
   
-  - platform: tmp102_extended
+  - platform: tmp102
     tmp102_id: freezer_temperature
     id: high_temp_alert
     name: "High Temp Alert"
 
+  - platform: rx8111
+    rx8111_id: freezer_rtc
+    event_flag:
+      id: event_flag
+      internal: true
+    alarm_flag:
+      id: alarm_flag
+      internal: true
+    
 i2c:
   id: i2c_bus
   sda: GPIO5
@@ -183,16 +226,12 @@ i2c:
   scan: true
 
 time:
-  - platform: rx8xxx
-    id: rx8111
-    model: RX8111CE
+  - platform: rx8111
+    id: freezer_rtc
     update_interval: 5s
-    timestamp_enabled: true
-    timestamp_record_mode: overwrite
-    event_timestamp:
-      id: event_timestamp
-      internal: true
-    event_level: LOW
+    event_poll_interval: 1s
+    event_enabled: true
+    event_level: low
     evin_pull: pullup_500k
     evin_filter: 2
     on_event:
@@ -203,23 +242,18 @@ time:
         - delay: 100ms
         - script.execute: publish_wake_status
         - logger.log: "Woke from EVENT — Temp Exceeded"
-    event_flag:
-      id: event_flag
-      internal: true
     alarm_enabled: true
     alarm_hour: 0
     alarm_minute: 0
     alarm_second: 0
     on_alarm:
       then:
-        - globals.set:
-            id: woke_from_event
-            value: "false"
+        - lambda: |-
+            // A simultaneous or earlier EVIN event must still require acknowledgement.
+            id(woke_from_event) = id(woke_from_event) ||
+                (id(event_flag).has_state() && id(event_flag).state);
         - script.execute: publish_wake_status
         - logger.log: "Woke from ALARM — Daily heartbeat"
-    alarm_flag:
-      id: alarm_flag
-      internal: true
 
   - platform: homeassistant
     id: ha_time
@@ -228,11 +262,11 @@ time:
         - logger.log:
             format: "HA time sync → writing to RTC"
             level: INFO
-        - rx8xxx.write_time:
-            id: rx8111
+        - rx8111.write_time:
+            id: freezer_rtc
 
 sensor:
-  - platform: tmp102_extended
+  - platform: tmp102
     id: ambient_temperature
     name: "Ambient"
     address: 0x49
@@ -242,7 +276,7 @@ sensor:
     unit_of_measurement: °F
     update_interval: 5s
 
-  - platform: tmp102_extended
+  - platform: tmp102
     id: freezer_temperature
     name: "Freezer Temperature"
     address: 0x48
@@ -250,6 +284,9 @@ sensor:
     conversion_rate: 0.25Hz
     alert_polarity: active_low
     thermostat_mode: comparator
+    # Defaults for the restorable threshold number entities below.
+    temperature_high: "10°F"
+    temperature_low: "9°F"
     filters:
       - lambda: return x * (9.0 / 5.0) + 32.0;
     unit_of_measurement: "°F"
@@ -302,6 +339,12 @@ sensor:
     update_interval: 5s
 
 text_sensor:
+  - platform: rx8111
+    rx8111_id: freezer_rtc
+    id: event_timestamp
+    internal: true
+    timestamp_record_mode: overwrite
+
   - platform: template
     id: last_wake_reason
     name: "Last Wake Reason"
@@ -312,7 +355,7 @@ text_sensor:
     name: "Last Wake Time"
     icon: mdi:clock-outline
 
-  - platform: tmp102_extended
+  - platform: tmp102
     tmp102_id: freezer_temperature
     id: threshold_status
     name: "Threshold Status"
@@ -346,17 +389,15 @@ number:
       then:
         - script.execute: set_next_alarm
 
-  - platform: tmp102_extended
+  - platform: tmp102
     tmp102_id: freezer_temperature
     temperature_high:
       id: high_temp_threshold
       name: "High Temp Threshold"
-      initial_value: "10°F"
       restore_value: true
     temperature_low:
       id: clear_temp_threshold
       name: "Clear Temp Threshold"
-      initial_value: "9°F"
       restore_value: true
       
 select:
@@ -381,14 +422,27 @@ select:
 
 button:
   - platform: template
+    name: "Clear Power Cut Fault"
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(power_cut_fault_latched) = false;
+          id(power_cut_fault).publish_state(false);
+      # This clears the diagnostic only; it does not restart a failed shutdown loop.
+      - lambda: 'power_cut_fault_latched->update();'
+
+  - platform: template
     id: acknowledge_freezer_alarm
     name: "Acknowledge Freezer Alarm"
     on_press:
       then:
         - if:
             condition:
-              lambda: 'return !id(keep_on_for_testing);'
+              lambda: |-
+                return !id(keep_on_for_testing) && id(scheduling_ready) &&
+                       !id(shutdown_hold) && !id(pmos_cycle).is_running();
             then:
+              - lambda: 'id(woke_from_event) = false;'
               - script.execute: pmos_cycle
             else:
               - logger.log:
@@ -421,7 +475,7 @@ script:
             return;
           }
 
-          auto now = id(rx8111).utcnow();
+          auto now = id(freezer_rtc).utcnow();
           if (now.is_valid()) {
             char timestamp[32];
             snprintf(timestamp, sizeof(timestamp), "%04u-%02u-%02uT%02u:%02u:%02uZ",
@@ -435,12 +489,14 @@ script:
   - id: set_next_alarm
     mode: restart
     then:
-      - rx8xxx.read_time:
-          id: rx8111
       - lambda: |-
           id(next_alarm_valid) = false;
+          if (!id(scheduling_ready) || !id(alarm_flag).has_state() ||
+              !id(event_flag).has_state())
+            return;
+          id(freezer_rtc).read_time();
 
-          auto now = id(rx8111).utcnow();
+          auto now = id(freezer_rtc).utcnow();
           if (!now.is_valid()) {
             ESP_LOGE("rtc_alarm", "RTC time invalid; leaving existing alarm");
             return;
@@ -510,109 +566,116 @@ script:
           target_minute_of_day %= 1440UL;
           id(next_alarm_hour) = target_minute_of_day / 60UL;
           id(next_alarm_minute) = target_minute_of_day % 60UL;
-          id(next_alarm_valid) = true;
+          id(next_alarm_valid) = id(freezer_rtc).set_alarm(
+              0, id(next_alarm_minute), id(next_alarm_hour), 0xFF, 0xFF);
+          if (!id(next_alarm_valid)) {
+            ESP_LOGE("rtc_alarm", "RTC alarm programming failed; keeping power on");
+            return;
+          }
 
           ESP_LOGI("rtc_alarm", "Next alarm: %02u:%02u UTC (start %02u:%02u, interval %u h)",
                    static_cast<unsigned>(id(next_alarm_hour)), static_cast<unsigned>(id(next_alarm_minute)),
                    static_cast<unsigned>(start_hour), static_cast<unsigned>(start_minute),
                    static_cast<unsigned>(interval_hours));
-      - if:
-          condition:
-            lambda: 'return id(next_alarm_valid);'
-          then:
-            - rx8xxx.set_alarm:
-                id: rx8111
-                hour: !lambda "return id(next_alarm_hour);"
-                minute: !lambda "return id(next_alarm_minute);"
-                second: 0
   - id: pmos_cycle
-    mode: restart
+    mode: single
     then:
+      - lambda: 'id(cycle_fired) = true;'
       - script.execute: set_next_alarm
       - script.wait: set_next_alarm
       - if:
           condition:
+            lambda: 'return !id(next_alarm_valid);'
+          then:
+            - logger.log:
+                level: ERROR
+                format: "Power cut blocked: alarm not programmed; retrying in 5 seconds"
+            - delay: 5s
+            - lambda: 'id(cycle_fired) = false;'
+            - script.stop: pmos_cycle
+      - component.update: freezer_temperature
+      - delay: 100ms
+      - if:
+          condition:
             lambda: |-
-              return id(next_alarm_valid);
+              return id(keep_on_for_testing) || id(shutdown_hold) ||
+                     !id(high_temp_alert).has_state() || id(high_temp_alert).state;
           then:
             - logger.log:
                 level: WARN
-                format: "Next RTC alarm set; power cut routine started."
+                format: "Power cut postponed: keep-awake enabled or temperature has not cleared"
+            - delay: 5s
+            - lambda: 'id(cycle_fired) = false;'
+            - script.stop: pmos_cycle
 
-            # Refresh TMP102 status. Its update schedules a read after 50 ms.
-            - component.update: freezer_temperature
-            - delay: 100ms
-
-            # Do not release the RTC interrupt while the freezer comparator is
-            # active. In comparator mode, it clears only below Clear Temp Threshold.
-            - if:
+      # Keep the API available on the recovery boot, so a second failure can be reported.
+      - if:
+          condition:
+            lambda: 'return !id(power_cut_retry_used);'
+          then:
+            - lambda: 'id(api_server).on_shutdown();'
+            - wait_until:
                 condition:
-                  lambda: |-
-                    return id(high_temp_alert).has_state() &&
-                           !id(high_temp_alert).state;
-                then:
-                  # Request a clean API disconnect before releasing the RTC interrupt.
-                  - lambda: |-
-                      using namespace esphome::api;
-
-                      if (global_api_server != nullptr &&
-                          global_api_server->is_connected_with_state_subscription()) {
-                        global_api_server->on_shutdown();
-
-                        // Give Home Assistant up to five seconds to acknowledge the
-                        // disconnect and close the API connection.
-                        const uint32_t start = millis();
-                        while (millis() - start < 5000) {
-                          if (global_api_server->teardown()) {
-                            break;
-                          }
-                          delay(10);
-                        }
-                      }
-
-                  - logger.log:
-                      level: WARN
-                      format: "Cutting power"
-
-                  - switch.turn_off: tmp_power
-
-                  - rx8xxx.clear_alarm_flag:
-                      id: rx8111
-
-                  - rx8xxx.clear_event_flag:
-                      id: rx8111
-
-                  - delay: 100ms
-
-                  - logger.log:
-                      level: ERROR
-                      format: "Power appears to still be on"
-                else:
-                  - logger.log:
-                      level: WARN
-                      format: "Power cut blocked: freezer temperature has not cleared"
-
-          else:
+                  lambda: 'return id(api_server).teardown();'
+                timeout: 5s
+      - switch.turn_off: tmp_power
+      - lambda: |-
+          const bool alarm_cleared = id(freezer_rtc).clear_alarm_flag();
+          const bool event_cleared = id(freezer_rtc).clear_event_flag();
+          if (!alarm_cleared || !event_cleared)
+            ESP_LOGE("power_cut", "RTC flag acknowledgement failed");
+      - delay: 250ms
+      # Execution here means the hard power cut did not happen.
+      - switch.turn_on: tmp_power
+      - lambda: |-
+          id(power_cut_fault_latched) = true;
+          id(power_cut_fault).publish_state(true);
+      - lambda: 'power_cut_fault_latched->update();'
+      - if:
+          condition:
+            lambda: 'return !id(power_cut_retry_used);'
+          then:
             - logger.log:
                 level: ERROR
-                format: "Power cut blocked: unable to set next RTC alarm; retrying in 5 seconds"
-
-            - delay: 5s
-
-            - globals.set:
-                id: cycle_fired
-                value: "false"
+                format: "Power cut failed; attempting one recovery reboot"
+            - lambda: 'id(power_cut_retry_used) = true;'
+            - lambda: 'power_cut_retry_used->update();'
+            - lambda: |-
+                // Flush the fault and retry marker before rebooting.
+                global_preferences->sync();
+                App.safe_reboot();
+          else:
+            - lambda: |-
+                id(shutdown_hold) = true;
+                id(woke_from_event) = true;
+            - logger.log:
+                level: ERROR
+                format: "Power cut failed after recovery; staying on for diagnosis"
 
 interval:
   - id: timing_interval
-    interval: 1s
-    startup_delay: 12s
+    interval: 250ms
     then:
-    - if:
-        condition:
-          lambda: 'return !id(keep_on_for_testing) && !id(cycle_fired) && !id(woke_from_event);'
-        then:
-          - globals.set:
-              id: cycle_fired
-              value: "true"
-          - script.execute: pmos_cycle
+      - lambda: |-
+          if (id(report_window_complete))
+            return;
+          const uint32_t now = millis();
+          // A state subscriber is the useful connection, not Wi-Fi or a log client.
+          if (!id(subscriber_seen) && now < 15000 &&
+              id(api_server).is_connected_with_state_subscription()) {
+            id(subscriber_seen) = true;
+            id(subscriber_since) = now;
+          }
+          id(report_window_complete) = id(subscriber_seen)
+              ? now - id(subscriber_since) >= 7000
+              : now >= 15000;
+      - if:
+          condition:
+            lambda: |-
+              return id(scheduling_ready) && id(report_window_complete) &&
+                     !id(keep_on_for_testing) && !id(cycle_fired) &&
+                     (!id(woke_from_event) || id(power_cut_retry_used)) &&
+                     !id(shutdown_hold) &&
+                     !id(pmos_cycle).is_running();
+          then:
+            - script.execute: pmos_cycle

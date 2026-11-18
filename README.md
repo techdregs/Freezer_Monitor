@@ -8,7 +8,7 @@ Setup Video: https://youtu.be/nzpPNruYSMk
 
 Technical Video: https://youtu.be/-qzcmOnRHUw
 
-Setting up Helpers and Notifcations: https://youtu.be/nKuBQElTua8
+Setting up Helpers and Notifications: https://youtu.be/nKuBQElTua8
 
 Etsy (purchase): https://www.etsy.com/listing/4555225886/freezer-monitor-for-home-assistant
 
@@ -31,7 +31,7 @@ Etsy (purchase): https://www.etsy.com/listing/4555225886/freezer-monitor-for-hom
 
 ## Requirements
 
-- Home Assistant with the ESPHome add-on or integration installed.
+- Home Assistant with the ESPHome integration. If you build or update firmware from the project YAML, use ESPHome **2026.11.0 or newer**. You do not need the ESPHome Device Builder to use a pre-flashed monitor.
 - A 2.4 GHz Wi-Fi network.
 - The supplied pre-flashed Freezer Monitor, FPC probe, and battery.
 - Optional: Home Assistant Companion App for phone push notifications, or an existing Home Assistant email notification service for email alerts.
@@ -61,15 +61,14 @@ Use only a single-cell 3.7 V LiPo battery with a PH-style connector. Verify conn
 
 ## How it works
 
-The probe-side TMP102 sensor monitors freezer temperature continuously, even when the ESP32 is powered off. The RTC controls ESP32 power and records both scheduled wakes and temperature events.
+The probe-side TMP102 sensor monitors freezer temperature continuously, even when the ESP32 is powered off. The RX8111 RTC controls ESP32 power: it raises an alarm for a scheduled wake and can capture a timestamp when the probe signals a temperature event.
 
 | Term | Meaning |
 | --- | --- |
 | **Alarm** | A scheduled RTC heartbeat wake. Default: every 12 hours. |
 | **Event / Alert** | A freezer temperature above **High Temp Threshold**. This wakes the ESP32 immediately. |
-| | |
 
-During a normal Alarm wake, the monitor powers on for about 12 seconds, updates Home Assistant with freezer and ambient temperature, battery voltage/percentage, Wi-Fi signal, and wake status, then the RTC cuts ESP32 power again.
+During a normal alarm wake, the monitor reports freezer and ambient temperature, battery voltage and percentage, Wi-Fi signal, and wake status. If Home Assistant subscribes to entity states within 15 seconds of startup, the monitor waits another seven seconds before attempting to power off. If no state subscriber connects in that window, it attempts to power off after about 15 seconds rather than waiting indefinitely. A graceful API disconnect can add up to five seconds. A failed alarm write or a probe alert that has not cleared can postpone shutdown.
 
 The default heartbeat schedule is every 12 hours. **Wake Start Hour (UTC)** and **Wake Start Minute** determine the base heartbeat time; **Wake Interval Hours** selects interval length in between heartbeats. Wake times for the device are then derived from the selected time and interval settings. All schedule times are UTC. Adjust them manually when local-time or daylight-saving changes require it. Setting wake interval to 0 will wake the device once a day (every 24hrs).
 
@@ -91,6 +90,7 @@ The helper cannot power on the monitor immediately and cannot apply its value du
 | --- | --- |
 | **CONTROLS**| |
 | **Acknowledge Freezer Alarm** | Acknowledges a temperature event so normal power cycling can resume. |
+| **Clear Power Cut Fault** | Clears the stored fault indication after investigation. It does not restart a failed shutdown cycle. |
 |||
 <img src="Images/Controls.png" alt="App Controls" width="500">
 
@@ -102,6 +102,7 @@ The helper cannot power on the monitor immediately and cannot apply its value du
 | **Freezer Temperature** | Temperature at the end of the probe. |
 | **High Temp Alert** | On while the probe sensor reports a high-temperature condition. |
 | **Last Wake Reason** / **Last Wake Time** | Last RTC wake cause and time. |
+| **Power Cut Fault** | Indicates that the monitor stayed powered after a shutdown attempt. The indication is saved across reboots. |
 | **Threshold Status** | Reports threshold write or validation status. |
 |||
 <img src="Images/Sensors.png" alt="App Sensors" width="500">
@@ -124,12 +125,9 @@ The clear threshold must not exceed the high threshold; a lower value provides h
 
 When freezer temperature rises above **High Temp Threshold**, the probe signals the RTC. The RTC creates an Event, turns on the ESP32, and Home Assistant receives the **High Temp Alert** state.
 
-The monitor remains powered after an alert until both conditions are true:
+To resume normal power cycling after an alert, turn off **Keep On for Configuration** and press **Acknowledge Freezer Alarm**. The monitor will not cut power while the probe alert is active or its state is unknown. If you acknowledge the event before the freezer cools below **Clear Temp Threshold**, the monitor can retry once the alert clears.
 
-1. Freezer temperature has fallen below **Clear Temp Threshold**.
-2. You press **Acknowledge Freezer Alarm** in Home Assistant.
-
-The monitor reports alert state to Home Assistant; it does not directly send push notifications or email. Create a Home Assistant automation to deliver notifications.
+The monitor reports alert state to Home Assistant; it does not directly send push notifications or email. Create a Home Assistant automation to deliver notifications. You can also trigger a separate notification when **Power Cut Fault** turns on; Home Assistant can only receive that state when the monitor connects.
 
 ### Create a phone push or email alert
 
@@ -165,15 +163,19 @@ Optional: create a second automation triggered when **High Temp Alert** changes 
 The pre-flashed firmware is intended to work without YAML edits. Advanced ESPHome users can adopt the device from the ESPHome dashboard:
 
 1. Wait for the device to wake, then enable **Keep On for Configuration**.
-2. Use ESPHome dashboard adoption. The dashboard import downloads the full local YAML configuration.
+2. Use ESPHome dashboard adoption. The dashboard downloads the project YAML from this repository.
 3. Edit or update as needed, then compile and install firmware.
 4. Turn off **Keep On for Configuration** to resume low-power operation.
 
-Compiling the adopted YAML requires Internet access from the ESPHome host. It downloads the external TMP102 and RX8XXX ESPHome components referenced in the configuration.
+Firmware v0.2.0 uses the built-in `tmp102` and `rx8111` components. Use ESPHome 2026.11.0 or newer to compile it. No `external_components` entries are needed for these chips. The build may still need Internet access to fetch toolchain dependencies.
 
-When migrating older YAML, keep TMP102 temperature readings under `sensor`, move threshold controls to `number`, alert state to `binary_sensor`, and threshold status to `text_sensor`. Each optional platform uses `platform: tmp102_extended` and links to the temperature sensor with `tmp102_id: freezer_temperature`. See the [current YAML](YAML/Freezer_Monitor.yaml).
+If you maintain a customized copy of older YAML, use the [v0.2.0 YAML](YAML/Freezer_Monitor.yaml) as the migration reference:
 
-Serial logs are disabled in the shipped firmware (`logger.baud_rate: 0`) to reduce power use.
+- **TMP102:** Use `platform: tmp102` for temperature readings, threshold controls, the alert binary sensor, and the threshold status text sensor. Set the default `temperature_high` and `temperature_low` on the freezer temperature sensor, not as `initial_value` on the numbers. Link the optional entities to it with `tmp102_id: freezer_temperature`.
+- **RX8111:** Use `platform: rx8111` under `time` and the `rx8111.*` action namespace. The project explicitly enables EVIN detection and reads the alarm and event flags through a separate `binary_sensor` block. The linked `text_sensor` enables timestamp capture in `overwrite` mode. Both entity blocks use `rx8111_id: freezer_rtc`.
+- **Shutdown recovery:** The project uses `storage: rtc` for the retry marker so it survives a software reboot but not a full power cut. Do not remove it to work around an older build environment; update ESPHome instead.
+
+Serial logging is controlled by the build's `logger` configuration. Set `logger.baud_rate: 0` to disable serial output in a custom build.
 
 ### Manual USB flashing
 
@@ -181,7 +183,7 @@ Use manual flashing only to recover a device or install the supplied precompiled
 
 #### with ESPHome Web
 
-No local ESPHome or `esptool` installation is required. In Chrome, Edge, or another browser with Web Serial support, open [ESPHome Web](https://web.esphome.io/), connect the monitor's USB serial port, select **Install**, then select [the factory firmware](Firmware/freezer-monitor-firmware.factory.0.1.1.bin).
+No local ESPHome or `esptool` installation is required. In Chrome, Edge, or another browser with Web Serial support, open [ESPHome Web](https://web.esphome.io/), connect the monitor's USB serial port, select **Install**, then select [the factory firmware](Firmware/freezer-monitor-firmware.factory.0.2.0.bin).
 
 #### with esptool via command line
 
@@ -195,7 +197,7 @@ Then erase and flash the device. Replace `/dev/ttyACM0` with its serial port, su
 
 ```bash
 esptool --chip esp32c3 --port /dev/ttyACM0 erase-flash
-esptool --chip esp32c3 --port /dev/ttyACM0 write-flash 0x0 Firmware/freezer-monitor-firmware.factory.0.1.1.bin
+esptool --chip esp32c3 --port /dev/ttyACM0 write-flash 0x0 Firmware/freezer-monitor-firmware.factory.0.2.0.bin
 ```
 
 ## Errata
@@ -207,20 +209,21 @@ There is a silkscreen error on the back of the PCB for the probe pins. This will
 ## Project files
 
 - [ESPHome YAML](YAML/Freezer_Monitor.yaml)
-- [Precompiled factory firmware 0.1.1](Firmware/freezer-monitor-firmware.factory.0.1.1.bin)
+- [Precompiled factory firmware 0.2.0](Firmware/freezer-monitor-firmware.factory.0.2.0.bin)
 - Schematics: [main PCB](Schematics/Freezer%20Monitor%200.5.pdf), [flat probe cable](Schematics/Flat_NTC.pdf), and [KiCad FPC footprint](Schematics/FPC_Footprint/FPC8_1.0mm.kicad_mod)
 - Datasheets: [ESP32-C3-MINI-1](Datasheets/esp32-c3-mini-1_datasheet_en.pdf), [RX8111CE RTC](Datasheets/RX8111CE_en.pdf), and [TMP102](Datasheets/TMP102_UMW.pdf)
 - Enclosure models: [housing](Enclosure/Freezer%20Monitor%20v0.5%20Enclosure-Housing.3mf), [lid](Enclosure/Freezer%20Monitor%20v0.5%20Enclosure-Lid.3mf), and [complete enclosure STEP](Enclosure/Freezer%20Monitor%20v0.5%20Enclosure.step)
 - PCB/probe models: [PCB STEP](PCB%20Models/Freezer%20Monitor%20PCB%20v0.5.step) and [flat probe STEP](PCB%20Models/Flat_Probe.step)
 
-Schematics and models are supplied for reference and custom enclosure design. 
+Schematics and models are supplied for reference and custom enclosure design.
 
 ## Troubleshooting
 
 | Problem | Check |
 | --- | --- |
-| Device remains on after disabling Keep On | Confirm it has received Home Assistant time synchronization. The monitor cannot schedule its first normal power cut until RTC time is valid. |
+| Device remains on after disabling Keep On | Confirm it has received Home Assistant time synchronization and that the next RTC alarm can be programmed. Check whether a latched temperature event still needs acknowledgement or the probe alert has not cleared. |
+| Power Cut Fault is on | The monitor did not power off when expected. The firmware makes one recovery reboot; if the retry also fails, the monitor stays on for diagnosis. Check the logs if available. **Clear Power Cut Fault** clears the indication only. |
 | A setting does not change | The monitor was likely powered off. Wait for an awake period or enable **Keep On for Configuration**. |
 | A threshold change is rejected or fails | Check **Threshold Status** for an invalid threshold value or pair, or an I²C write failure. |
 | No phone/email alert | Confirm **High Temp Alert** changes to `on` and that the Home Assistant automation and notification service work. |
-| Cannot use serial logs | Shipped firmware intentionally disables serial logging. Use ESPHome logs/API while the device is awake, or customize YAML after adoption. |
+| Cannot use serial logs | Check whether serial logging is enabled in your build. You can also use ESPHome API logs while the device is awake and connected. |
